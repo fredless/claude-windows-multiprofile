@@ -67,7 +67,7 @@ cd claude-windows-multiprofile
 # Create "Claude (Personal)" + "Claude (Work)" shortcuts on your Desktop.
 # -DefaultProfile Personal keeps your already-signed-in account for Personal;
 # every other profile gets its own isolated login.
-powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -Profile Personal,Work -DefaultProfile Personal
+powershell -ExecutionPolicy Bypass -Command "& .\scripts\Setup.ps1 -Profile Personal,Work -DefaultProfile Personal"
 ```
 
 Then:
@@ -88,7 +88,7 @@ Both windows now run at the same time, fully isolated.
 
 ```powershell
 # Any names you like; each gets its own isolated login + shortcut.
-powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -Profile Personal,ClientA,ClientB
+powershell -ExecutionPolicy Bypass -Command "& .\scripts\Setup.ps1 -Profile Personal,ClientA,ClientB"
 ```
 
 ### Different install location
@@ -322,7 +322,7 @@ instance riêng = một cửa sổ + một tài khoản chạy song song.
 ```powershell
 git clone https://github.com/fredless/claude-windows-multiprofile.git
 cd claude-windows-multiprofile
-powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -Profile Personal,Work -DefaultProfile Personal
+powershell -ExecutionPolicy Bypass -Command "& .\scripts\Setup.ps1 -Profile Personal,Work -DefaultProfile Personal"
 ```
 
 - Tạo 2 icon trên Desktop: **Claude (Personal)** và **Claude (Work)**.
