@@ -125,7 +125,7 @@ if (-not $KeepRouting) {
     }
 
     # Router files Setup installed into bin\ (only these known names).
-    foreach ($f in 'ClaudeOpenShim.ps1', 'Arm-ClaudeLogin.ps1', 'target.txt', 'route.log', 'profiles.json') {
+    foreach ($f in 'ClaudeOpenShim.ps1', 'Arm-ClaudeLogin.ps1', 'target.txt', 'last-route.txt', 'route.log', 'profiles.json') {
         $path = Join-Path $binDir $f
         if (Test-Path $path) {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
