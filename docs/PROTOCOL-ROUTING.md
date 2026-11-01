@@ -16,8 +16,9 @@ rather than observed, it says so.
 
 ## The problem in one paragraph
 
-Enterprise (SSO) login happens in your browser and returns to the app through a
-`claude://…` deep link. Windows delivers that link to **whichever single
+Browser login — enterprise SSO **and** consumer *Continue with Google* alike —
+happens in your browser and returns to the app through a `claude://…` deep link
+(for Google: `claude://login/google-auth?code=…`). Windows delivers that link to **whichever single
 application currently owns the `claude://` protocol** — not to the instance that
 started the login. With two profiles running (say *Personal* and a work
 profile), the callback repeatedly lands in the default profile, so the **work**
@@ -34,7 +35,7 @@ priority order (highest wins):
 
 | # | Layer | Where | Notes |
 |---|-------|-------|-------|
-| 1 | **UserChoice** | `HKCU\…\Explorer\UrlAssociations\claude\UserChoice` | Wins over everything when present. Hash-protected: can only be set legitimately by the user picking a default app in Settings. |
+| 1 | **UserChoice** | Newer Windows 11 (observed on 26H2): `HKCU\…\Windows\Shell\Associations\UrlAssociations\claude\UserChoiceLatest`, ProgId in its `ProgId` subkey. Older builds: `HKCU\…\Explorer\UrlAssociations\claude\UserChoice`, ProgId value. | Wins over everything when present. Hash-protected: can only be set legitimately by the user picking a default app in Settings. `Test-ClaudeRouting.ps1` checks both locations. |
 | 2 | **MSIX package manifest** | the installed Claude package's `AppxManifest.xml` | When no UserChoice exists, activation goes here and **completely bypasses** the classic registry key below. Delivery goes to the running package process if one exists. |
 | 3 | **Classic key** | `HKCU\Software\Classes\claude\shell\open\command` | Only consulted when neither of the above applies. Frequently a **leftover** from an older Squirrel-style install (see §2). |
 
@@ -56,7 +57,9 @@ Start-Process "claude://test/ping"
 # 2) Did the shim get it?
 Get-Content "$env:USERPROFILE\ClaudeProfiles\bin\route.log" -Tail 3
 
-# 3) What actually launched, and with which profile?
+# 3) What actually launched, and with which profile? (When the router handles
+#    the probe it launches nothing -- see §4 -- so a NEW Claude process here
+#    means the app itself took the activation.)
 Get-CimInstance Win32_Process -Filter "Name='Claude.exe'" |
     Select-Object ProcessId, CommandLine
 ```
@@ -178,14 +181,43 @@ arming instead:
   the safe (stock/personal) profile the resting state — an un-armed activation
   can only ever land somewhere harmless.
 
+### Two exceptions that keep one-shot arming usable
+
+Observed in a real Google sign-in: one-shot arming alone misroutes in two
+ordinary situations, so the shim special-cases them without making the marker
+sticky.
+
+- **Re-delivered callbacks.** The browser asks "Open Console Window Host?" and
+  a user who clicks **Open** again (or whose first click seemed to do nothing)
+  re-fires the **identical** `claude://` URL. The first delivery already reset
+  the marker, so every repeat used to open the default profile — an extra
+  "please sign in" window per click. The shim now remembers the first delivery
+  in `last-route.txt` (`<utc ticks>|<sha256 of the URL>|<target>`; only the hash
+  is stored, never the URL) and sends an identical URL arriving within
+  **5 minutes** to the same target. It applies only while the marker is unarmed
+  (a re-delivery always arrives after the reset), and `Arm-ClaudeLogin.ps1`
+  clears `last-route.txt` — so an armed login always follows the marker, even
+  for a bare deep link that carries no per-login nonce and repeats verbatim.
+- **The diagnostic probe.** `Test-ClaudeRouting.ps1` fires `claude://test/ping`.
+  It used to go through the normal path: it launched Claude and **consumed an
+  armed marker**, so running the diagnostic right after arming silently disarmed
+  the next real login. The shim now only logs the probe (`probe (armed: …; not
+  launched, marker kept)`).
+
+OAuth codes and tokens in callback URLs are masked (`code=<redacted>`) before
+anything is written to `route.log`.
+
 ### route.log triage table
 
-`route.log` lines look like: `2026-07-23T09:15:04  <target> <- <url>`.
+`route.log` lines look like: `2026-07-23T09:15:04  <target> <- <url>`, with
+`  (repeat of the previous callback)` appended for a re-delivery.
 
 | Symptom during a login | Meaning | Fix |
 |---|---|---|
 | **No new line at all** | Activation never reached the shim → handler chain resolved at MSIX manifest / classic key. Registration problem. | Re-pick the router in Settings (§5); verify with `Test-ClaudeRouting.ps1`. |
 | **Line with the *wrong* target** | Shim ran, but the marker held the wrong profile. Arming-state problem. | You forgot to arm, or armed the wrong profile. Re-arm before retrying. |
+| **Several lines with the same URL, the first to the right profile** | The browser re-delivered the callback. Lines marked `(repeat …)` followed the first one, as intended. | Nothing to fix. (Without the repeat note, you're running a pre-fix shim: re-run `Setup.ps1`.) |
+| **`probe (armed: …)` line** | `Test-ClaudeRouting.ps1` reached the shim. Nothing was launched and the marker was left as shown. | Nothing to fix. |
 | **Line with the right target, but token still wrong** | Delivery reached the right profile dir, but Chromium may have received a truncated path. | Check the running process's `--user-data-dir` (§3 quoting). |
 | **Line reads `ERROR: Claude.exe not found`** | MSIX package not resolvable. | Confirm the app is installed (`Get-AppxPackage *Claude*`). |
 

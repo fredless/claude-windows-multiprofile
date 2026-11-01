@@ -17,6 +17,14 @@
     'default' so an unrelated later login can't silently land in the wrong
     profile.
 
+    Two exceptions keep that one-shot model from misfiring in practice:
+      * a re-delivery of the SAME callback URL within a few minutes (the user
+        clicked "Open" on the browser's handler prompt again) follows the first
+        delivery's target instead of the already-reset marker (last-route.txt);
+      * the diagnostic URL claude://test/ping is logged only -- it neither
+        launches Claude nor consumes an armed marker.
+    OAuth codes/tokens are masked before anything is written to route.log.
+
     Arm the desired target with Arm-ClaudeLogin.ps1 before starting a login.
 
     See docs/PROTOCOL-ROUTING.md for the full delivery-chain model and the
@@ -36,9 +44,80 @@
 #>
 param([string]$Url)
 
-$Base       = $PSScriptRoot
-$TargetFile = Join-Path $Base 'target.txt'
-$LogFile    = Join-Path $Base 'route.log'
+$Base          = $PSScriptRoot
+$TargetFile    = Join-Path $Base 'target.txt'
+$LogFile       = Join-Path $Base 'route.log'
+$LastRouteFile = Join-Path $Base 'last-route.txt'
+
+# How long a re-delivered callback (same URL) keeps following the first one.
+# Browsers re-fire the identical claude:// URL when the user clicks "Open" on
+# the handler prompt more than once; without this, every click after the first
+# finds the marker already reset to 'default' and opens the stock profile.
+$RepeatWindowSeconds = 300
+
+# True for the diagnostic URL Test-ClaudeRouting.ps1 fires. The probe must
+# prove the handler chain reaches the shim WITHOUT side effects: it must not
+# launch Claude and must not consume an armed marker (otherwise running the
+# diagnostic right after Arm-ClaudeLogin.ps1 silently disarms the next login).
+function Test-ClaudeProbeUrl {
+    param([string]$Url)
+    return $Url -match '^claude://test/ping/?$'
+}
+
+# Masks credential-bearing query values so route.log never stores a live OAuth
+# code. The routing decision and the URL shape stay readable for triage.
+function Get-ClaudeLogSafeUrl {
+    param([string]$Url)
+    # Any query or fragment key that looks like a credential (code, *token*,
+    # state, *session*, *key*, *secret*), e.g. refresh_token, sessionKey.
+    return $Url -replace '(?i)([?&#][\w-]*(code|token|state|session|key|secret)[\w-]*=)[^&#]*', '$1<redacted>'
+}
+
+function Get-ClaudeUrlHash {
+    param([string]$Url)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Url))
+        return -join ($bytes | ForEach-Object { $_.ToString('x2') })
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+# Decides where this activation goes. Normally that is the marker; but if the
+# same URL was routed less than $WindowSeconds ago, it is a re-delivery of that
+# callback and follows the earlier decision instead of the (already reset)
+# marker. $LastRoute is the content of last-route.txt: "<utc ticks>|<sha256>|<target>".
+# Pure function (no I/O) so it can be unit-tested (see tests/Test-ShimRouting.ps1).
+function Resolve-ClaudeRouteTarget {
+    param(
+        [string]$Marker,
+        [string]$UrlHash,
+        [string]$LastRoute,
+        [datetime]$NowUtc,
+        [int]$WindowSeconds = 300
+    )
+    $target = if ($Marker) { $Marker } else { 'default' }
+    $result = @{ Target = $target; IsRepeat = $false }
+    # An armed marker always wins: a genuine re-delivery only ever arrives after
+    # the first delivery reset the marker to 'default'. Without this, a bare deep
+    # link with no per-login nonce (same URL every time) could drag a freshly
+    # armed login back to an earlier profile.
+    if ($target -ne 'default') { return $result }
+    if (-not $LastRoute) { return $result }
+
+    $parts = $LastRoute.Split('|', 3)
+    if ($parts.Count -ne 3 -or $parts[1] -ne $UrlHash -or -not $parts[2]) { return $result }
+
+    $ticks = 0L
+    if (-not [long]::TryParse($parts[0], [ref]$ticks)) { return $result }
+    # Out-of-range ticks would make [datetime]::new throw and lose the login.
+    if ($ticks -lt 0 -or $ticks -gt [datetime]::MaxValue.Ticks) { return $result }
+    $age = ($NowUtc - [datetime]::new($ticks, [System.DateTimeKind]::Utc)).TotalSeconds
+    if ($age -lt 0 -or $age -gt $WindowSeconds) { return $result }
+
+    return @{ Target = $parts[2]; IsRepeat = $true }
+}
 
 # Builds the single, pre-quoted argument string handed to Start-Process.
 #
@@ -75,6 +154,20 @@ function Invoke-ClaudeShim {
         $t = (Get-Content $TargetFile -First 1).Trim()
         if ($t) { $target = $t }
     }
+    $safeUrl = Get-ClaudeLogSafeUrl $Url
+
+    # --- diagnostic probe: prove delivery, touch nothing else ------------------
+    if (Test-ClaudeProbeUrl $Url) {
+        Add-Content $LogFile "$(Get-Date -Format s)  probe (armed: $target; not launched, marker kept) <- $safeUrl"
+        return
+    }
+
+    # --- a re-delivered callback follows the earlier decision -----------------
+    $urlHash   = Get-ClaudeUrlHash $Url
+    $lastRoute = if (Test-Path $LastRouteFile) { Get-Content $LastRouteFile -First 1 } else { $null }
+    $route     = Resolve-ClaudeRouteTarget -Marker $target -UrlHash $urlHash -LastRoute $lastRoute `
+        -NowUtc ([datetime]::UtcNow) -WindowSeconds $RepeatWindowSeconds
+    $target    = $route.Target
 
     # --- resolve Claude.exe from the installed MSIX package -----------------
     # MSIX-only on purpose: there is deliberately NO fallback to an old
@@ -84,7 +177,7 @@ function Invoke-ClaudeShim {
         Sort-Object Version -Descending | Select-Object -First 1
     $exe = if ($pkg) { Join-Path $pkg.InstallLocation 'app\Claude.exe' }
     if (-not $exe -or -not (Test-Path $exe)) {
-        Add-Content $LogFile "$(Get-Date -Format s)  ERROR: Claude.exe not found (url: $Url)"
+        Add-Content $LogFile "$(Get-Date -Format s)  ERROR: Claude.exe not found (url: $safeUrl)"
         exit 1
     }
 
@@ -95,8 +188,14 @@ function Invoke-ClaudeShim {
     #   * no new line during a login  => the handler chain failed BEFORE the shim
     #                                     (registration/UserChoice problem)
     #   * a line with the wrong target => arming-state problem
-    Add-Content $LogFile "$(Get-Date -Format s)  $target <- $Url"
+    $note = if ($route.IsRepeat) { '  (repeat of the previous callback)' } else { '' }
+    Add-Content $LogFile "$(Get-Date -Format s)  $target <- $safeUrl$note"
     Start-Process -FilePath $exe -ArgumentList $argStr
+
+    # Remember the first delivery of this URL so re-deliveries can follow it.
+    if (-not $route.IsRepeat) {
+        Set-Content $LastRouteFile "$([datetime]::UtcNow.Ticks)|$urlHash|$target" -Encoding ASCII
+    }
 
     # --- one-shot reset so a later login doesn't silently land in the wrong profile ---
     # The dangerous failure mode is a sticky marker: a personal re-auth landing

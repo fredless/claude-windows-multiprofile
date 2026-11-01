@@ -9,7 +9,9 @@
     Start-Process "claude://test/ping" and checks whether the shim wrote a fresh
     line to route.log. That probe exercises the WHOLE OS handler-resolution chain
     (UserChoice > MSIX manifest > classic key), which directly invoking the shim
-    script does not. It may open/focus a Claude window -- that's expected.
+    script does not. When the router handles it, the shim only logs the probe:
+    no Claude window opens and an armed login stays armed. (If the probe opens a
+    Claude window, the activation went to the app itself, not the router.)
 
     See docs/PROTOCOL-ROUTING.md for how to read the results (especially the
     route.log triage table).
@@ -77,11 +79,29 @@ $regApps = 'HKCU:\Software\RegisteredApplications'
 $hasApp = (Test-Path $regApps) -and ((Get-Item $regApps).GetValue('ClaudeShim', $null))
 Write-Host ("  RegisteredApplications\ClaudeShim: {0}" -f $(if ($hasApp) { 'present' } else { 'absent' }))
 
-$userChoice = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\UrlAssociations\claude\UserChoice'
-if (Test-Path $userChoice) {
-    $progId = (Get-ItemProperty $userChoice -ErrorAction SilentlyContinue).ProgId
+# Where Windows stores the user's pick depends on the build:
+#   * newer Windows 11 (seen on 24H2+/26H2): Shell\Associations\UrlAssociations\
+#     claude\UserChoiceLatest, with the ProgId in a ProgId SUBKEY;
+#   * earlier builds: Explorer\UrlAssociations\claude\UserChoice, ProgId value.
+# Check the newer location first; report whichever holds a ProgId.
+function Get-ClaudeUserChoice {
+    $candidates = @(
+        @{ Label = 'UserChoiceLatest'; Path = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\claude\UserChoiceLatest\ProgId' },
+        @{ Label = 'UserChoice';       Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\UrlAssociations\claude\UserChoice' }
+    )
+    foreach ($c in $candidates) {
+        if (-not (Test-Path $c.Path)) { continue }
+        $id = (Get-ItemProperty $c.Path -ErrorAction SilentlyContinue).ProgId
+        if ($id) { return @{ Label = $c.Label; ProgId = $id } }
+    }
+    return $null
+}
+
+$choice = Get-ClaudeUserChoice
+if ($choice) {
+    $progId = $choice.ProgId
     $color = if ($progId -eq 'ClaudeShim.claude') { 'Green' } else { 'Yellow' }
-    Write-Host "  UserChoice ProgId: $progId" -ForegroundColor $color
+    Write-Host "  $($choice.Label) ProgId: $progId" -ForegroundColor $color
     if ($progId -ne 'ClaudeShim.claude') {
         Write-Host "    (Not the router. Pick 'Console Window Host' in Settings > Default apps"
         Write-Host "     > Choose defaults by link type > claude.)"
@@ -101,6 +121,7 @@ if (-not $NoPing) {
         $last = Get-Content $logFile -Tail 1
         Write-Host "  OK: shim logged a fresh line:" -ForegroundColor Green
         Write-Host "    $last"
+        Write-Host "    (The probe launches nothing and leaves an armed login armed.)"
     } else {
         Write-Host "  NO new route.log line." -ForegroundColor Red
         Write-Host "    The activation never reached the shim -> the handler chain resolved"

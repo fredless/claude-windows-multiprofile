@@ -99,6 +99,10 @@ Set-ItemProperty 'HKCU:\Software\Classes\claude\shell\open\command' '(Default)' 
 # --- set the routing target (ASCII avoids a BOM the shim would have to strip) ---
 Set-Content $TargetFile $target -Encoding ASCII
 
+# A new arming starts a new login: forget the previous callback so a
+# re-delivery window from an earlier login can't apply to this one.
+Remove-Item (Join-Path $Base 'last-route.txt') -Force -ErrorAction SilentlyContinue
+
 Write-Host "Armed: next claude:// login routes to [$resolved] (target: $target)" -ForegroundColor Green
 
 # --- optionally launch the profile so the sign-in button is right there -------

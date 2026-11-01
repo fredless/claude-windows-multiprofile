@@ -118,15 +118,29 @@ up). Manual equivalent for any launcher:
 wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
 ```
 
+> **Want the opposite — every profile sharing one `~/.claude`?** That's the
+> default only for the `-DefaultProfile` profile. Every *other* profile gets its
+> own `~\.claude-<name>` automatically, which means it starts **without** your
+> plugins, skills, global `CLAUDE.md` and memory. To keep a profile on the
+> shared store, map it to an empty string:
+>
+> ```powershell
+> & .\scripts\Setup.ps1 -Profile Personal,Alt -DefaultProfile Personal -ConfigDir @{ Alt = '' }
+> ```
+
 ---
 
-## Enterprise SSO / login routing
+## Browser sign-in (Google, SSO) / login routing
 
-Browser-based SSO returns to the app through a `claude://` deep link. With two
-profiles running, Windows delivers that callback to whichever profile owns the
-protocol — so a **work** SSO token can land in the **personal** profile. Older
-guides work around this by telling you to log in one account at a time with the
-others closed.
+**This is not only for enterprise SSO.** Any sign-in that happens in your
+browser — *Continue with Google* included — returns to the app through a
+`claude://` deep link. With two profiles running, Windows delivers that callback
+to whichever profile owns the protocol, so the second account's login lands in
+the **first** profile: you see a new window of your main profile asking you to
+sign in again, and the other profile stays signed out. Older guides work around
+this by telling you to log in one account at a time with the others closed —
+which isn't an option if you're using Claude Code inside the main profile while
+setting up the second one.
 
 This repo instead installs a small **login router**: a `claude://` handler that
 sends the next callback to the profile you choose. The flow is **setup → one
@@ -155,14 +169,21 @@ Settings pick → arm → log in**:
    "Claude (\<name\>) - Sign in" desktop shortcut that arms + launches in one
    click.)
 
-3. **Verify** anytime:
+   Clicking **Open** on the browser's "open Console Window Host?" prompt more
+   than once is fine: a re-delivery of the same callback within 5 minutes
+   follows the first one to the armed profile instead of falling back to the
+   default.
+
+3. **Verify** anytime — the probe only logs, so it's safe to run right after
+   arming:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\Test-ClaudeRouting.ps1
    ```
 
 Prefer to sequence logins manually instead? Run `Setup.ps1 -NoProtocolRouting`
-and log in one account at a time.
+and log in one account at a time, with **every other Claude window closed**
+(the callback goes to whichever Claude process is running).
 
 **Full mechanics** — the UserChoice > MSIX-manifest > classic-key delivery
 chain, the Squirrel-leftover login-loop trap, the arm/disarm model and
@@ -219,8 +240,8 @@ repo afterwards and everything keeps working. Profile *data* lives under
 - **Switching the "main" app:** the regular Start-menu Claude icon still uses
   `%APPDATA%\Claude`, i.e. the same login as the profile you named with
   `-DefaultProfile`.
-- **Enterprise SSO** returning to the wrong profile? See
-  [Enterprise SSO / login routing](#enterprise-sso--login-routing) above and
+- **Google or SSO sign-in** returning to the wrong profile? See
+  [Browser sign-in (Google, SSO) / login routing](#browser-sign-in-google-sso--login-routing) above and
   [docs/PROTOCOL-ROUTING.md](docs/PROTOCOL-ROUTING.md).
 
 ---
@@ -266,6 +287,8 @@ choice self-clears. Pass `-KeepRouting` to leave the router in place.
 | Second window won't open | Make sure the two shortcuts use **different** `--user-data-dir` paths (check shortcut *Target*). |
 | Icon is blank or grey | Re-run `Setup.ps1` (current versions extract the icon to a stable `bin\claude.ico`, so it survives updates). If a stale thumbnail lingers, clear the icon cache: `ie4uinit.exe -show`, or `Stop-Process -Name explorer -Force; Start-Process explorer`. |
 | **"Failed to start Claude's workspace" / `VHDX file not found`** in a cloned profile | The profile's data dir is **outside `%APPDATA%`**, so the Cowork VM service can't find `rootfs.vhdx`. Re-run `Setup.ps1` (current version puts profiles under `%APPDATA%`). To migrate an existing profile without re-login, move `ClaudeProfiles\<name>` → `%APPDATA%\<name>` and update the shortcut's first argument to `%APPDATA%\<name>`. Do **not** use a junction/symlink for `vm_bundles` — the VM service refuses to open reparse points. |
+| **Signing in to the second profile opens another window of the main profile asking you to sign in** | The browser callback went to the default profile. Set up [login routing](#browser-sign-in-google-sso--login-routing), arm the profile (or use its "- Sign in" shortcut) and retry. `route.log` shows where each callback went: a line starting with `default` means nothing was armed at that moment. |
+| **Google shows "400. That's an error … malformed"** during sign-in | A Google-side failure before anything reaches Claude: usually a browser extension rewriting the OAuth URL, or several Google accounts signed in to the same browser. Paste the sign-in URL into a private/incognito window and sign in with only the target account. |
 | **Cowork won't start in one profile while another is open** (`HYPERVISOR_SERVICE_ERROR`, *"a virtual machine … with the specified identifier already exists"*) | Expected — see [Cowork VM limitations](#cowork-vm-limitations). Only one profile can run the Cowork VM at a time; quit the other profile (or reboot to clear a stale VM) before launching. |
 
 ---
@@ -330,7 +353,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -Profile Personal,Wor
   (khỏi login lại). Icon Work mở cửa sổ mới để đăng nhập tài khoản còn lại.
 - Bấm lại icon → focus đúng cửa sổ của tài khoản đó (không mở trùng).
 - Đăng nhập SSO (doanh nghiệp) bị nhầm profile? Xem phần
-  [Enterprise SSO / login routing](#enterprise-sso--login-routing) và
+  [Browser sign-in (Google, SSO) / login routing](#browser-sign-in-google-sso--login-routing) và
   [docs/PROTOCOL-ROUTING.md](docs/PROTOCOL-ROUTING.md).
 
 Muốn tách riêng cả **bộ nhớ Claude Code / Cowork** cho từng profile (mặc định

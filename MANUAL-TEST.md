@@ -35,7 +35,7 @@ scripts. Parameterised on purpose — substitute your own values:
       link type → `claude` → **Console Window Host**).
 - [ ] Do the Settings pick.
 - [ ] `powershell -ExecutionPolicy Bypass -File scripts\Test-ClaudeRouting.ps1`
-      → **UserChoice ProgId = ClaudeShim.claude**, and the
+      → **UserChoice (or UserChoiceLatest) ProgId = ClaudeShim.claude**, and the
       `claude://test/ping` probe shows a **fresh `route.log` line**.
 
 ## 2. Armed routing with both instances running (acceptance #2)
@@ -46,13 +46,25 @@ scripts. Parameterised on purpose — substitute your own values:
 - [ ] Start a browser login for the `<ISOLATED>` account; complete SSO.
 - [ ] The callback lands in the **`<ISOLATED>`** window (token/account correct).
 - [ ] `Get-Content "<BIN>\target.txt"` now reads `default`.
-- [ ] `route.log` last line shows `<ISOLATED_DIR> <- claude://…`.
+- [ ] `route.log` last line shows `<ISOLATED_DIR> <- claude://…` with the OAuth
+      `code=` value shown as `<redacted>`.
+
+### 2b. Repeated "Open" clicks and the probe
+
+- [ ] Repeat §2, but click **Open** on the browser's handler prompt two or
+      three times. Every extra `route.log` line for that URL reads
+      `<ISOLATED_DIR> <- … (repeat of the previous callback)`, and **no** extra
+      window of the default profile appears.
+- [ ] Arm `<ISOLATED>`, run `Test-ClaudeRouting.ps1`, then
+      `Get-Content "<BIN>\target.txt"` still reads `<ISOLATED_DIR>`; the probe
+      line reads `probe (armed: <ISOLATED_DIR>; not launched, marker kept)` and
+      no Claude window opened. Disarm with `Arm-ClaudeLogin.ps1 -Profile default`.
 
 ## 3. Unarmed = safe resting state (acceptance #3)
 
-- [ ] Without arming, fire `Start-Process "claude://test/ping"`.
-- [ ] `route.log` shows `default <- claude://test/ping` (routes to the stock
-      profile, not an isolated one).
+- [ ] Without arming, fire `Start-Process "claude://manual-test/unarmed"`.
+- [ ] `route.log` shows `default <- claude://manual-test/unarmed` (routes to
+      the stock profile, not an isolated one).
 
 ## 4. Spaces in path survive quoting (acceptance #4)
 
@@ -63,6 +75,7 @@ scripts. Parameterised on purpose — substitute your own values:
       shows `--user-data-dir="…\Claude-Client A"` as **one quoted value** (not
       truncated at the space). `Test-ClaudeRouting.ps1` reports it intact.
 - [ ] `powershell -ExecutionPolicy Bypass -File tests\Test-ArgBuilder.ps1` passes.
+- [ ] `powershell -ExecutionPolicy Bypass -File tests\Test-ShimRouting.ps1` passes.
 
 ## 5. Uninstall symmetry (acceptance #5)
 
